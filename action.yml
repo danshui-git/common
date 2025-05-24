@@ -54,24 +54,32 @@ runs:
         fi
         echo "runs_to_delete=true" >> $GITHUB_OUTPUT
 
-    - name: "Delete old runs"
+    - name: "Delete old runs"  # 注意：这里需要和上面的 steps 保持相同缩进（之前缺少缩进）
       shell: bash
       if: steps.fetch_runs.outputs.runs_to_delete == 'true'
       run: |
-        # 使用 --arg 传递字符串参数，并通过 tonumber 转为数值
-        RUNS_TO_DELETE=$(echo "$RUNS_JSON" | jq --arg keep "$RUNS_TO_KEEP" -r '.[($keep|tonumber):][].databaseId')
-        if [ -z "$RUNS_TO_DELETE" ]; then
-          echo "No runs to delete"
+        echo "调试信息："
+        echo "RUNS_TO_KEEP 值: $RUNS_TO_KEEP"  # 确认变量值
+        echo "RUNS_JSON 长度: $(echo "$RUNS_JSON" | jq length)"  # 确认 JSON 长度
+        
+        # 调试 jq 命令，输出结果
+        echo "执行 jq 命令前的原始 JSON:"
+        echo "$RUNS_JSON" | jq .
+        
+        # 保存 jq 结果到临时文件，方便查看
+        echo "$RUNS_JSON" | jq --arg keep "$RUNS_TO_KEEP" -r '.[($keep|tonumber):][].databaseId' > runs_to_delete.txt
+        
+        # 检查结果
+        if [ -s runs_to_delete.txt ]; then
+          echo "待删除的记录（ID）:"
+          cat runs_to_delete.txt
+          # 实际执行删除
+          while read RUN_ID; do
+            echo "Deleting run ID: $RUN_ID"
+            gh run delete "$RUN_ID" --yes
+          done < runs_to_delete.txt
+        else
+          echo "jq 命令返回空结果，没有需要删除的记录"
+          echo "可能原因：RUNS_TO_KEEP 值过大（超过总记录数）"
           exit 0
         fi
-        
-        # 输出要删除的记录数和ID列表（调试用）
-        DELETE_COUNT=$(echo "$RUNS_TO_DELETE" | wc -l)
-        echo "即将删除 $DELETE_COUNT 个旧运行记录"
-        echo "删除列表: $RUNS_TO_DELETE"
-        
-        # 逐个删除（添加 --yes 参数自动确认，避免交互式提示）
-        echo "$RUNS_TO_DELETE" | while read RUN_ID; do
-          echo "Deleting run ID: $RUN_ID"
-          gh run delete "$RUN_ID" --yes  # 添加 --yes 自动确认删除
-        done
