@@ -46,6 +46,7 @@ runs:
           exit 0
         fi
         echo "$RUNS_JSON" > ./runs.json
+        chmod +x ./runs.json
         RUN_COUNT=$(jq length ./runs.json)
         echo "RUN_COUNT=${RUN_COUNT}" >> $GITHUB_ENV
         if [ "$RUN_COUNT" -le $RUNS_TO_KEEP ]; then
