@@ -40,7 +40,6 @@ runs:
       id: fetch_runs
       run: |
         RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt)
-        echo "Fetched runs JSON: $RUNS_JSON"  # Debugging output
         if [ -z "$RUNS_JSON" ]; then
           echo "No runs found, nothing to delete."
           exit 0
