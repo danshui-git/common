@@ -1,4 +1,3 @@
-
 name: 'Clean Old Workflow Runs'
 description: 'Deletes old GitHub Actions runs keeping specified number of recent ones'
 
@@ -41,12 +40,12 @@ runs:
       id: fetch_runs
       run: |
         RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt)
-        echo "${RUNS_JSON}" | jq . > /tmp/runs.json
+        echo "${RUNS_JSON}" > /tmp/runs.json
         
         RUN_COUNT=$(jq length /tmp/runs.json)
         echo "RUN_COUNT=${RUN_COUNT}" >> $GITHUB_ENV
 
-        if [ "$RUN_COUNT" -le ${{ env.RUNS_TO_KEEP }} ]; then
+        if [ "$RUN_COUNT" -le $RUNS_TO_KEEP ]; then
           echo "No runs to delete"
           exit 0
         fi
@@ -54,7 +53,7 @@ runs:
     - name: "Delete old runs"
       shell: bash
       run: |
-        jq -r ".[${{ env.RUNS_TO_KEEP }}:][].databaseId" /tmp/runs.json | while read RUN_ID; do
+        jq --argjson keep $RUNS_TO_KEEP -r ".[$keep:][].databaseId" /tmp/runs.json | while read RUN_ID; do
           echo "Deleting run ID: $RUN_ID"
           gh run delete "$RUN_ID" --confirm
         done
