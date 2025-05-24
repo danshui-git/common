@@ -1,81 +1,62 @@
 name: 'My Composite Action'
-description: 'Combines multiple steps'
-runs:
-  using: "composite"
-  steps:
-    # 检查rootfs.tar.gz是否存在
-    - name: 检查rootfs.tar.gz是否存在
-      shell: bash
-      run: |
-        cd "${HOME_PATH}"
-        if [[ -n "$(find "${FIRMWARE_PATH}" -maxdepth 1 -name '*rootfs.tar.gz' -print -quit)" ]]; then
-          mkdir -p "${HOME_PATH}/targz"
-          cp -Rf "${FIRMWARE_PATH}"/*rootfs.tar.gz "${HOME_PATH}/targz/${SOURCE}-armvirt-64-default-rootfs.tar.gz"
-        else
-          echo -e "\033[31m 没发现armvirt-64-default-rootfs.tar.gz包存在 \033[0m\n"
-          echo "PACKAGING_FIRMWARE=false" >> "${GITHUB_ENV}"
-        fi
+description: 'Deletes old GitHub Actions runs artifacts, keeping a specified number of the most recent ones'
 
-    - name: 检查变量是否存在
-      shell: bash
-      run: |
-        cd "${HOME_PATH}"
-        [[ -z "${amlogic_model}" ]] && echo "amlogic_model值不存在" && exit 1
-        [[ -z "${amlogic_kernel}" ]] && echo "amlogic_kernel值不存在" && exit 1
-        [[ -z "${auto_kernel}" ]] && echo "auto_kernel=值不存在" && exit 1
-        [[ -z "${rootfs_size}" ]] && echo "openwrt_size值不存在" && exit 1
-        [[ -z "${kernel_usage}" ]] && echo "kernel_usage值不存在" && exit 1
-
-    # 将rootfs.tar.gz发布到releases的targz
-    - name: 将rootfs.tar.gz发布releases的targz
-      uses: ncipollo/release-action@v1
-      with:
-        name: rootfs.tar.gz
-        tag: targz
-        token: ${{ env.REPO_TOKEN }}
-        artifacts: ${{ env.HOME_PATH }}/targz/*rootfs.tar.gz
-        allowUpdates: true
-        replacesArtifacts: true
-        body: armsr_rootfs_tar_gz打包使用的rootfs.tar.gz包
-
-    # 打包armsr_rootfs_tar_gz
-    - name: 打包aarch64系列固件
-      id: dabao
-      if: env.PACKAGING_FIRMWARE == 'true'
-      uses: ophub/amlogic-s9xxx-openwrt@main
-      with:
-        openwrt_path: openwrt/targz/*rootfs.tar.gz
-        openwrt_board: ${{ env.amlogic_model }}
-        openwrt_kernel: ${{ env.amlogic_kernel }}
-        auto_kernel: ${{ env.auto_kernel }}
-        kernel_repo: ${{ env.kernel_repo }}
-        kernel_usage: ${{ env.kernel_usage }}
-        openwrt_size: ${{ env.openwrt_size }}
-        builder_name: ${{ env.builder_name }}
-
-    # 打包信息
-    - name: 打包信息
-      if: steps.dabao.outcome == 'success'
-      shell: bash
-      run: |
-        cd "${HOME_PATH}"
-        echo "DABAO_MESSAGE=、打包" >> "${GITHUB_ENV}"
-
-    # 打包后的固件放回原位
-    - name: 打包后的固件放回原位
-      if: steps.dabao.outcome == 'success'
-      shell: bash
-      run: |
-        cd "${HOME_PATH}"
-        if [[ -d "${PACKAGED_OUTPUTPATH}" ]]; then
-          cp -Rf "${FIRMWARE_PATH}"/* "${PACKAGED_OUTPUTPATH}"
-        fi
-        echo "FIRMWARE_PATH=${PACKAGED_OUTPUTPATH}" >> "${GITHUB_ENV}"
-        if [[ -n "${TARGET_BOARD}" ]]; then
-          echo "TARGET_PROFILE_IMG=${TARGET_BOARD}-img" >> "${GITHUB_ENV}"
-        else
-          echo "TARGET_PROFILE_IMG=armsr-img" >> "${GITHUB_ENV}"
-        fi
 branding:
   icon: "terminal"
   color: "gray-dark"
+
+inputs:
+  runs_to_keep:
+    description: "Number of latest runs to keep"
+    required: true
+    default: "6"
+  fetch_limit:
+    description: "Maximum number of runs to fetch in one query"
+    required: true
+    default: "500"
+  github_token:
+    description: "GitHub token for authentication"
+    required: true
+    default: "${{ github.token }}"
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Set up environment"
+      shell: bash
+      run: |
+        # Set the number of runs to keep
+        RUNS_TO_KEEP=${{ inputs.runs_to_keep }}
+        echo "RUNS_TO_KEEP=${RUNS_TO_KEEP}" >> $GITHUB_ENV
+
+        # Set the limit for the number of runs to fetch in one query
+        FETCH_LIMIT=${{ inputs.fetch_limit }}
+        echo "FETCH_LIMIT=${FETCH_LIMIT}" >> $GITHUB_ENV
+
+        # Set the GitHub token for authentication
+        GITHUB_TOKEN=${{ inputs.github_token }}
+        echo "GITHUB_TOKEN=${GITHUB_TOKEN}" >> $GITHUB_ENV
+
+    - name: "Fetch all workflow runs"
+      id: fetch_runs
+      run: |
+        # Configure gh CLI with the GitHub token
+        echo "${{ env.GITHUB_TOKEN }}" | gh auth login --with-token
+
+        # Fetch workflow runs excluding the ones that are in progress, limited by FETCH_LIMIT
+        RUNS=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt --jq '.[] | {databaseId, createdAt}' | sort -r -k2)
+        echo "RUNS=${RUNS}" >> $GITHUB_ENV
+
+    - name: "Filter and delete old artifacts"
+      run: |
+        # Parse the runs and delete artifacts for runs beyond the specified number to keep
+        RUNS_TO_KEEP=${{ env.RUNS_TO_KEEP }}
+        RUNS=${{ env.RUNS }}
+        RUNS_ARRAY=($RUNS)
+        RUNS_TO_DELETE=${RUNS_ARRAY[@]:$RUNS_TO_KEEP}
+        
+        for RUN in $RUNS_TO_DELETE; do
+          RUN_ID=$(echo $RUN | jq -r '.databaseId')
+          echo "Deleting artifacts for run ID: $RUN_ID"
+          gh run delete $RUN_ID --confirm
+        done
