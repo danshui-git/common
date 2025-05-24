@@ -31,10 +31,6 @@ runs:
         FETCH_LIMIT=${{ inputs.fetch_limit }}
         echo "FETCH_LIMIT=${FETCH_LIMIT}" >> $GITHUB_ENV
 
-    - name: "Install jq"
-      shell: bash
-      run: sudo apt-get install -y jq
-
     - name: "Authenticate GitHub CLI"
       shell: bash
       run: |
@@ -45,9 +41,9 @@ runs:
       id: fetch_runs
       run: |
         RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt)
-        echo "${RUNS_JSON}" > runs.json
+        echo "$RUNS_JSON" | jq . > /tmp/runs.json
         
-        RUN_COUNT=$(jq length runs.json)
+        RUN_COUNT=$(jq length /tmp/runs.json)
         echo "RUN_COUNT=${RUN_COUNT}" >> $GITHUB_ENV
 
         if [ "$RUN_COUNT" -le ${{ env.RUNS_TO_KEEP }} ]; then
@@ -58,8 +54,8 @@ runs:
     - name: "Delete old runs"
       shell: bash
       run: |
-        jq -r ".[${{ env.RUNS_TO_KEEP }}:][].databaseId" runs.json | while read RUN_ID; do
+        jq -r ".[${{ env.RUNS_TO_KEEP }}:][].databaseId" /tmp/runs.json | while read RUN_ID; do
           echo "Deleting run ID: $RUN_ID"
           gh run delete "$RUN_ID" --confirm
         done
-        rm runs.json
+        rm -f /tmp/runs.json
