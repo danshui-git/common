@@ -55,7 +55,7 @@ runs:
     - name: "Delete old runs"
       shell: bash
       run: |
-        RUNS_TO_DELETE=$(echo "$RUNS_JSON" | jq --argjson keep $RUNS_TO_KEEP -r ".[$keep:][].databaseId")
+        RUNS_TO_DELETE=$(echo "$RUNS_JSON" | jq --argjson keep $RUNS_TO_KEEP -r '.[$keep:][].databaseId')
         if [ -z "$RUNS_TO_DELETE" ]; then
           echo "No runs to delete"
           exit 0
