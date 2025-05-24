@@ -1,3 +1,4 @@
+
 name: 'My Composite Action'
 description: 'Deletes old GitHub Actions runs artifacts, keeping a specified number of the most recent ones'
 
@@ -25,58 +26,43 @@ runs:
     - name: "Set up environment"
       shell: bash
       run: |
-        # Set the number of runs to keep
         RUNS_TO_KEEP=${{ inputs.runs_to_keep }}
         echo "RUNS_TO_KEEP=${RUNS_TO_KEEP}" >> $GITHUB_ENV
-
-        # Set the limit for the number of runs to fetch in one query
         FETCH_LIMIT=${{ inputs.fetch_limit }}
         echo "FETCH_LIMIT=${FETCH_LIMIT}" >> $GITHUB_ENV
 
-        # Set the GitHub token for authentication
-        GITHUB_TOKEN=${{ inputs.github_token }}
-        echo "GITHUB_TOKEN=${GITHUB_TOKEN}" >> $GITHUB_ENV
+    - name: "Authenticate with GitHub CLI"
+      shell: bash
+      run: |
+        unset GITHUB_TOKEN
+        echo "${{ inputs.github_token }}" > token.txt
+        gh auth login --with-token < token.txt
+        rm token.txt
 
     - name: "Fetch all workflow runs"
       shell: bash
       id: fetch_runs
       run: |
-        # Configure gh CLI with the GitHub token
-        echo "${{ env.GITHUB_TOKEN }}" | gh auth login --with-token
-
-        # Fetch workflow runs excluding the ones that are in progress, limited by FETCH_LIMIT
-        RUNS=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt --jq '.[] | {databaseId, createdAt}' | sort -r -k2)
+        RUNS=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt)
         echo "RUNS=${RUNS}" >> $GITHUB_ENV
 
-        # Check if there are no runs
-        if [ -z "$RUNS" ]; then
-          echo "没有运行记录，无需操作"
+        if [ -z "$RUNS" ] || [ "$RUNS" = "[]" ]; then
+          echo "No runs found, nothing to do"
           exit 0
         fi
 
-        # Count the number of runs
         RUN_COUNT=$(echo "$RUNS" | jq length)
         echo "RUN_COUNT=${RUN_COUNT}" >> $GITHUB_ENV
 
-        # Check if the number of runs is within the retention limit
-        if [ "$RUN_COUNT" -le $RUNS_TO_KEEP ]; then
-          echo "运行记录数量在保留范围内，无需操作"
+        if [ "$RUN_COUNT" -le ${{ env.RUNS_TO_KEEP }} ]; then
+          echo "Number of runs within retention limit, nothing to do"
           exit 0
         fi
 
     - name: "Filter and delete old artifacts"
       shell: bash
       run: |
-        # Parse the runs and delete artifacts for runs beyond the specified number to keep
-        RUNS_TO_KEEP=${{ env.RUNS_TO_KEEP }}
-        RUNS=${{ env.RUNS }}
-        RUN_COUNT=${{ env.RUN_COUNT }}
-        
-        # Extract the runs to delete
-        RUNS_TO_DELETE=$(echo "$RUNS" | jq ".[$RUNS_TO_KEEP:]")
-        
-        # Delete the old runs
-        echo "$RUNS_TO_DELETE" | jq -r '.[] | .databaseId' | while read RUN_ID; do
-          echo "Deleting artifacts for run ID: $RUN_ID"
+        echo "${{ env.RUNS }}" | jq -r ".[${{ env.RUNS_TO_KEEP }}:][].databaseId" | while read RUN_ID; do
+          echo "Deleting run ID: $RUN_ID"
           gh run delete $RUN_ID --confirm
         done
