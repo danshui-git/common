@@ -9,7 +9,7 @@ inputs:
   runs_to_keep:
     description: "Number of latest runs to keep"
     required: true
-    default: "6"
+    default: "20"  # 默认保留20个，可被调用时覆盖
   fetch_limit:
     description: "Maximum number of runs to fetch"
     required: true
@@ -25,45 +25,53 @@ runs:
     - name: "Set up environment"
       shell: bash
       run: |
-        RUNS_TO_KEEP=${{ inputs.runs_to_keep }}
+        RUNS_TO_KEEP="${{ inputs.runs_to_keep }}"  # 从输入获取值
         echo "RUNS_TO_KEEP=${RUNS_TO_KEEP}" >> $GITHUB_ENV
-        FETCH_LIMIT=${{ inputs.fetch_limit }}
+        FETCH_LIMIT="${{ inputs.fetch_limit }}"
         echo "FETCH_LIMIT=${FETCH_LIMIT}" >> $GITHUB_ENV
 
     - name: "Authenticate GitHub CLI"
       shell: bash
       run: |
         echo "${{ inputs.github_token }}" | gh auth login --with-token
+        echo "认证成功"  # 可选：显示认证成功信息
 
     - name: "Fetch workflow runs"
       shell: bash
       id: fetch_runs
       run: |
-        RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt)
-        echo "Fetched runs JSON: $RUNS_JSON"  # Debugging output
+        RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit $FETCH_LIMIT --json databaseId,createdAt)
+        echo "Fetched runs JSON: $RUNS_JSON"  # 调试输出
         if [ -z "$RUNS_JSON" ]; then
           echo "No runs found, nothing to delete."
           exit 0
         fi
         RUN_COUNT=$(echo "$RUNS_JSON" | jq length)
         echo "RUN_COUNT=${RUN_COUNT}" >> $GITHUB_ENV
-        if [ "$RUN_COUNT" -le $RUNS_TO_KEEP ]; then
-          echo "No runs to delete"
+        if [ "$RUN_COUNT" -le "$RUNS_TO_KEEP" ]; then
+          echo "现有 $RUN_COUNT 个运行记录，保留 $RUNS_TO_KEEP 个，无需删除"
           exit 0
         fi
-        # If there are runs to delete, set an output variable to indicate this
         echo "runs_to_delete=true" >> $GITHUB_OUTPUT
 
     - name: "Delete old runs"
       shell: bash
       if: steps.fetch_runs.outputs.runs_to_delete == 'true'
       run: |
-        RUNS_TO_DELETE=$(echo "$RUNS_JSON" | jq --argjson keep $RUNS_TO_KEEP -r '.[$keep:][].databaseId')
+        # 使用 --arg 传递字符串参数，并通过 tonumber 转为数值
+        RUNS_TO_DELETE=$(echo "$RUNS_JSON" | jq --arg keep "$RUNS_TO_KEEP" -r '.[($keep|tonumber):][].databaseId')
         if [ -z "$RUNS_TO_DELETE" ]; then
           echo "No runs to delete"
           exit 0
         fi
+        
+        # 输出要删除的记录数和ID列表（调试用）
+        DELETE_COUNT=$(echo "$RUNS_TO_DELETE" | wc -l)
+        echo "即将删除 $DELETE_COUNT 个旧运行记录"
+        echo "删除列表: $RUNS_TO_DELETE"
+        
+        # 逐个删除（添加 --yes 参数自动确认，避免交互式提示）
         echo "$RUNS_TO_DELETE" | while read RUN_ID; do
           echo "Deleting run ID: $RUN_ID"
-          gh run delete "$RUN_ID"
+          gh run delete "$RUN_ID" --yes  # 添加 --yes 自动确认删除
         done
