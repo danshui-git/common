@@ -45,9 +45,7 @@ runs:
           echo "No runs found, nothing to delete."
           exit 0
         fi
-        echo "$RUNS_JSON" > ./runs.json
-        chmod +x ./runs.json
-        RUN_COUNT=$(jq length ./runs.json)
+        RUN_COUNT=$(echo "$RUNS_JSON" | jq length)
         echo "RUN_COUNT=${RUN_COUNT}" >> $GITHUB_ENV
         if [ "$RUN_COUNT" -le $RUNS_TO_KEEP ]; then
           echo "No runs to delete"
@@ -57,8 +55,12 @@ runs:
     - name: "Delete old runs"
       shell: bash
       run: |
-        jq --argjson keep $RUNS_TO_KEEP -r ".[$keep:][].databaseId" ./runs.json | while read RUN_ID; do
+        RUNS_TO_DELETE=$(echo "$RUNS_JSON" | jq --argjson keep $RUNS_TO_KEEP -r ".[$keep:][].databaseId")
+        if [ -z "$RUNS_TO_DELETE" ]; then
+          echo "No runs to delete"
+          exit 0
+        fi
+        echo "$RUNS_TO_DELETE" | while read RUN_ID; do
           echo "Deleting run ID: $RUN_ID"
           gh run delete "$RUN_ID" --confirm
         done
-        rm -f ./runs.json
