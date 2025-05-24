@@ -38,6 +38,7 @@ runs:
         echo "GITHUB_TOKEN=${GITHUB_TOKEN}" >> $GITHUB_ENV
 
     - name: "Fetch all workflow runs"
+      shell: bash
       id: fetch_runs
       run: |
         # Configure gh CLI with the GitHub token
@@ -64,6 +65,7 @@ runs:
         fi
 
     - name: "Filter and delete old artifacts"
+      shell: bash
       run: |
         # Parse the runs and delete artifacts for runs beyond the specified number to keep
         RUNS_TO_KEEP=${{ env.RUNS_TO_KEEP }}
