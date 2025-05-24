@@ -59,7 +59,11 @@ runs:
       if: steps.fetch_runs.outputs.runs_to_delete == 'true'
       run: |
         RUNS_TO_DELETE=$(echo "$RUNS_JSON" | jq --argjson keep $RUNS_TO_KEEP -r '.[$keep:][].databaseId')
+        if [ -z "$RUNS_TO_DELETE" ]; then
+          echo "No runs to delete"
+          exit 0
+        fi
         echo "$RUNS_TO_DELETE" | while read RUN_ID; do
           echo "Deleting run ID: $RUN_ID"
-          gh run delete "$RUN_ID" --confirm
+          gh run delete "$RUN_ID"
         done
