@@ -7,13 +7,15 @@ branding:
 
 inputs:
   runs_to_keep:
-    description: "Number of latest runs to keep"
+    description: "Number of latest runs to keep (index starts at 0)"
     required: true
-    default: "20"  # 默认保留20个，可被调用时覆盖
+    type: number  # 明确参数类型为数字，自动转换字符串输入
+    default: 20    # 直接使用数字，无需引号
   fetch_limit:
     description: "Maximum number of runs to fetch"
     required: true
-    default: "500"
+    type: number
+    default: 500
   github_token:
     description: "GitHub token for authentication"
     required: true
@@ -25,61 +27,75 @@ runs:
     - name: "Set up environment"
       shell: bash
       run: |
-        RUNS_TO_KEEP="${{ inputs.runs_to_keep }}"  # 从输入获取值
+        # 从输入获取参数并转为字符串（方便后续 shell 脚本使用）
+        RUNS_TO_KEEP="${{ inputs.runs_to_keep }}"
         echo "RUNS_TO_KEEP=${RUNS_TO_KEEP}" >> $GITHUB_ENV
         FETCH_LIMIT="${{ inputs.fetch_limit }}"
         echo "FETCH_LIMIT=${FETCH_LIMIT}" >> $GITHUB_ENV
+        echo "环境变量设置完成：保留 $RUNS_TO_KEEP 条记录，最多拉取 $FETCH_LIMIT 条"
 
     - name: "Authenticate GitHub CLI"
       shell: bash
       run: |
         echo "${{ inputs.github_token }}" | gh auth login --with-token
-        echo "认证成功"  # 可选：显示认证成功信息
+        echo "认证成功！当前 GitHub CLI 版本：$(gh --version)"  # 显示版本信息
 
     - name: "Fetch workflow runs"
       shell: bash
       id: fetch_runs
       run: |
-        RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit $FETCH_LIMIT --json databaseId,createdAt)
-        echo "Fetched runs JSON: $RUNS_JSON"  # 调试输出
+        # 调用 gh 命令获取运行记录，使用环境变量中的限制值
+        RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit "$FETCH_LIMIT" --json databaseId,createdAt)
+        
+        # 处理空结果
         if [ -z "$RUNS_JSON" ]; then
-          echo "No runs found, nothing to delete."
+          echo "未找到工作流运行记录，无需删除"
           exit 0
         fi
+        
+        # 统计记录数并写入环境变量
         RUN_COUNT=$(echo "$RUNS_JSON" | jq length)
-        echo "RUN_COUNT=${RUN_COUNT}" >> $GITHUB_ENV
+        echo "RUN_COUNT=$RUN_COUNT" >> $GITHUB_ENV
+        echo "成功获取 $RUN_COUNT 条工作流运行记录"
+        
+        # 判断是否需要删除
         if [ "$RUN_COUNT" -le "$RUNS_TO_KEEP" ]; then
-          echo "现有 $RUN_COUNT 个运行记录，保留 $RUNS_TO_KEEP 个，无需删除"
+          echo "现有记录数（$RUN_COUNT）≤ 保留数（$RUNS_TO_KEEP），无需删除"
           exit 0
         fi
+        
         echo "runs_to_delete=true" >> $GITHUB_OUTPUT
+        echo "需要删除旧记录：$((RUN_COUNT - RUNS_TO_KEEP)) 条"
 
-    - name: "Delete old runs"  # 注意：这里需要和上面的 steps 保持相同缩进（之前缺少缩进）
+    - name: "Delete old runs"
       shell: bash
       if: steps.fetch_runs.outputs.runs_to_delete == 'true'
       run: |
-        echo "调试信息："
-        echo "RUNS_TO_KEEP 值: $RUNS_TO_KEEP"  # 确认变量值
-        echo "RUNS_JSON 长度: $(echo "$RUNS_JSON" | jq length)"  # 确认 JSON 长度
+        # 重新获取 RUNS_JSON（避免跨步骤变量作用域问题）
+        RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit "$FETCH_LIMIT" --json databaseId,createdAt)
+        RUN_COUNT=$(echo "$RUNS_JSON" | jq length)
         
-        # 调试 jq 命令，输出结果
-        echo "执行 jq 命令前的原始 JSON:"
-        echo "$RUNS_JSON" | jq .
+        echo -e "\n===== 开始删除旧记录 ======"
+        echo "保留前 $RUNS_TO_KEEP 条最新记录，删除剩余 $((RUN_COUNT - RUNS_TO_KEEP)) 条"
         
-        # 保存 jq 结果到临时文件，方便查看
-        echo "$RUNS_JSON" | jq --arg keep "$RUNS_TO_KEEP" -r '.[($keep|tonumber):][].databaseId' > runs_to_delete.txt
+        # 使用 jq 提取待删除的 ID（索引从 RUNS_TO_KEEP 开始，JSON 数组从 0 计数）
+        RUNS_TO_DELETE=$(echo "$RUNS_JSON" | jq --argjson keep "$RUNS_TO_KEEP" -r '.[$keep:][].databaseId')
         
-        # 检查结果
-        if [ -s runs_to_delete.txt ]; then
-          echo "待删除的记录（ID）:"
-          cat runs_to_delete.txt
-          # 实际执行删除
-          while read RUN_ID; do
-            echo "Deleting run ID: $RUN_ID"
-            gh run delete "$RUN_ID" --yes
-          done < runs_to_delete.txt
-        else
-          echo "jq 命令返回空结果，没有需要删除的记录"
-          echo "可能原因：RUNS_TO_KEEP 值过大（超过总记录数）"
+        # 检查结果是否为空
+        if [ -z "$RUNS_TO_DELETE" ]; then
+          echo "未找到需要删除的记录（可能因索引超出范围）"
           exit 0
         fi
+        
+        # 输出待删除的 ID 列表（最多显示前 5 个，避免日志过长）
+        echo "待删除的记录 ID（共 $(echo "$RUNS_TO_DELETE" | wc -w) 条）:"
+        echo "$RUNS_TO_DELETE" | head -n 5 | sed 's/^/ - /'
+        [ $(echo "$RUNS_TO_DELETE" | wc -w) -gt 5 ] && echo "  ...（剩余 ${#RUNS_TO_DELETE[@]} 条）"
+        
+        # 执行删除操作（添加 --yes 自动确认）
+        echo "$RUNS_TO_DELETE" | while read -r RUN_ID; do
+          echo "正在删除 ID: $RUN_ID"
+          gh run delete "$RUN_ID" --yes || echo "删除失败：$RUN_ID"
+        done
+        
+        echo "===== 删除完成 ======"
