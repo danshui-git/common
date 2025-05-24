@@ -31,7 +31,7 @@ runs:
         FETCH_LIMIT=${{ inputs.fetch_limit }}
         echo "FETCH_LIMIT=${FETCH_LIMIT}" >> $GITHUB_ENV
 
-    - name: "Authenticate with GitHub CLI"
+    - name: "Authenticate GitHub CLI"
       shell: bash
       run: |
         unset GITHUB_TOKEN
@@ -39,30 +39,25 @@ runs:
         gh auth login --with-token < token.txt
         rm token.txt
 
-    - name: "Fetch all workflow runs"
+    - name: "Fetch workflow runs"
       shell: bash
       id: fetch_runs
       run: |
-        RUNS=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt)
-        echo "RUNS=${RUNS}" >> $GITHUB_ENV
+        RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt)
+        echo "RUNS_JSON=${RUNS_JSON}" >> $GITHUB_ENV
 
-        if [ -z "$RUNS" ] || [ "$RUNS" = "[]" ]; then
-          echo "No runs found, nothing to do"
-          exit 0
-        fi
-
-        RUN_COUNT=$(echo "$RUNS" | jq length)
+        RUN_COUNT=$(echo "$RUNS_JSON" | jq length)
         echo "RUN_COUNT=${RUN_COUNT}" >> $GITHUB_ENV
 
         if [ "$RUN_COUNT" -le ${{ env.RUNS_TO_KEEP }} ]; then
-          echo "Number of runs within retention limit, nothing to do"
+          echo "No runs to delete"
           exit 0
         fi
 
-    - name: "Filter and delete old artifacts"
+    - name: "Delete old runs"
       shell: bash
       run: |
-        echo "${{ env.RUNS }}" | jq -r ".[${{ env.RUNS_TO_KEEP }}:][].databaseId" | while read RUN_ID; do
+        echo "${{ env.RUNS_JSON }}" | jq -r ".[${{ env.RUNS_TO_KEEP }}:][].databaseId" | while read RUN_ID; do
           echo "Deleting run ID: $RUN_ID"
-          gh run delete $RUN_ID --confirm
+          gh run delete "$RUN_ID" --confirm
         done
