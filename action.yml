@@ -1,9 +1,5 @@
 name: 'Clean Old Workflow Runs'
-description: 'Deletes old GitHub Actions runs using GitHub API with correct parameters'
-
-branding:
-  icon: "trash"
-  color: "gray-dark"
+description: 'Deletes old GitHub Actions runs using GitHub API'
 
 inputs:
   runs_to_keep:
@@ -15,11 +11,14 @@ inputs:
     description: "Maximum runs per page (max 100)"
     required: true
     type: number
-    default: 100  # 最大值为100，API限制
+    default: 100
   github_token:
     description: "GitHub token with repo permission"
     required: true
-    default: "${{ github.token }}"
+  github_repository:  # 添加这个输入参数
+    description: "Repository name (e.g., owner/repo)"
+    required: true
+    default: "${{ github.repository }}"  # 默认使用当前仓库
 
 runs:
   using: "composite"
@@ -31,15 +30,18 @@ runs:
         echo "RUNS_TO_KEEP=${RUNS_TO_KEEP}" >> $GITHUB_ENV
         FETCH_LIMIT=${{ inputs.fetch_limit }}
         echo "FETCH_LIMIT=${FETCH_LIMIT}" >> $GITHUB_ENV
+        GITHUB_REPOSITORY=${{ inputs.github_repository }}  # 使用输入参数
+        echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}" >> $GITHUB_ENV
         echo "保留 $RUNS_TO_KEEP 条记录，每页拉取 $FETCH_LIMIT 条"
+        echo "仓库: $GITHUB_REPOSITORY"
 
     - name: "Fetch workflow runs via GitHub API"
       shell: bash
       id: fetch_runs
       run: |
         set -euo pipefail
-        OWNER=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
-        REPO=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
+        OWNER=$(echo "${{ inputs.github_repository }}" | cut -d'/' -f1)  # 从输入参数获取
+        REPO=$(echo "${{ inputs.github_repository }}" | cut -d'/' -f1)   # 从输入参数获取
         PAGE=1
         ALL_RUNS=()
 
@@ -73,42 +75,43 @@ runs:
         echo "runs_to_delete=true" >> $GITHUB_OUTPUT
         echo "待删除记录数：$((RUN_COUNT - RUNS_TO_KEEP))"
 
-    - name: "Delete old runs via GitHub API"
+    - name: "Fetch workflow runs via GitHub API"
       shell: bash
-      if: steps.fetch_runs.outputs.runs_to_delete == 'true'
+      id: fetch_runs
       run: |
         set -euo pipefail
-        RUNS_JSON=$(echo "${{ steps.fetch_runs.outputs.RUNS_JSON }}")
-        RUNS_TO_DELETE=$(echo "$RUNS_JSON" | jq --argjson keep "$RUNS_TO_KEEP" -r '.[$keep:][].databaseId')
-        
-        if [ -z "$RUNS_TO_DELETE" ]; then
-          echo "无待删除记录"
-          exit 0
-        fi
-        
-        echo -e "\n===== 开始删除 ====="
-        echo "待删除ID数量：$(echo "$RUNS_TO_DELETE" | wc -w)"
-        
         OWNER=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
         REPO=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
-        DELETE_SUCCESS=0
-        DELETE_FAILED=0
-        
-        for RUN_ID in $(echo "$RUNS_TO_DELETE"); do
-          echo "删除ID: $RUN_ID"
-          RESPONSE=$(curl -s -X DELETE "https://api.github.com/repos/${OWNER}/${REPO}/actions/runs/${RUN_ID}" \
-            -H "Authorization: token ${{ inputs.github_token }}" \
-            -H "Accept: application/vnd.github.v3+json")
-          
-          if echo "$RESPONSE" | jq -e '.errors' >/dev/null; then
-            echo "❌ 失败：$(echo "$RESPONSE" | jq -r '.errors[0].message')"
-            DELETE_FAILED+=1
-          else
-            DELETE_SUCCESS+=1
-            sleep 0.5  # 避免速率限制
+        PAGE=1
+        ALL_RUNS=()
+
+        while true; do
+          # 注意：status 参数值需与 API 一致（使用英文逗号，无空格）
+          API_URL="https://api.github.com/repos/${OWNER}/${REPO}/actions/runs?page=${PAGE}&per_page=${FETCH_LIMIT}&status=completed,failure,success,cancelled"
+          PAGE_RUNS=$(curl -sH "Authorization: token ${{ inputs.github_token }}" "$API_URL")
+      
+          # 解析包含 workflow_runs 数组的响应结构
+          RUNS=$(echo "$PAGE_RUNS" | jq '.workflow_runs[] | {databaseId: .id, createdAt: .created_at}')
+      
+          if [ -z "$RUNS" ]; then
+            break
           fi
+      
+          ALL_RUNS+=($(echo "$RUNS"))
+          echo "已获取第 $PAGE 页，包含 $(echo "$RUNS" | jq length) 条记录"
+          PAGE=$((PAGE + 1))
         done
-        
-        echo -e "\n===== 结果 ====="
-        echo "成功：$DELETE_SUCCESS | 失败：$DELETE_FAILED"
-        [ "$DELETE_FAILED" -gt 0 ] && exit 1
+    
+        # 合并所有页的记录（使用 jq -s 'add' 合并数组）
+        RUNS_JSON=$(echo "${ALL_RUNS[@]}" | jq -s 'add')
+        RUN_COUNT=$(echo "$RUNS_JSON" | jq length)
+        echo "RUN_COUNT=$RUN_COUNT" >> $GITHUB_ENV
+        echo "成功获取 $RUN_COUNT 条工作流运行记录"
+    
+        if [ "$RUN_COUNT" -le "$RUNS_TO_KEEP" ]; then
+          echo "现有记录数（$RUN_COUNT）≤ 保留数（$RUNS_TO_KEEP），无需删除"
+          exit 0
+        fi
+    
+        echo "runs_to_delete=true" >> $GITHUB_OUTPUT
+        echo "需要删除旧记录：$((RUN_COUNT - RUNS_TO_KEEP)) 条"
