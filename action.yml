@@ -7,7 +7,7 @@ branding:
 
 inputs:
   runs_to_keep:
-    description: "Number of latest runs to keep (index starts at 0)"
+    description: "Number of latest runs to keep"
     required: true
     type: number
     default: 20
@@ -43,32 +43,62 @@ runs:
       shell: bash
       id: fetch_runs
       run: |
-        # 使用 --paginate 参数确保获取所有页面的记录
-        RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit "$FETCH_LIMIT" --paginate --json databaseId,createdAt)
+        ALL_RUNS=()
+        PAGE=1
         
-        if [ -z "$RUNS_JSON" ]; then
+        # 循环获取所有页的数据
+        while true; do
+          PAGE_RUNS=$(gh run list --status completed --status failure --status success --status cancelled --limit "$FETCH_LIMIT" --page "$PAGE" --json databaseId,createdAt)
+          
+          # 如果当前页为空，说明已获取全部数据
+          if [ -z "$(echo "$PAGE_RUNS" | jq -r '.[0]')" ]; then
+            break
+          fi
+          
+          ALL_RUNS+=("$PAGE_RUNS")
+          echo "已获取第 $PAGE 页数据"
+          PAGE=$((PAGE + 1))
+        done
+        
+        # 合并所有页的数据
+        if [ ${#ALL_RUNS[@]} -gt 0 ]; then
+          RUNS_JSON=$(echo "${ALL_RUNS[@]}" | jq -s 'add')
+          RUN_COUNT=$(echo "$RUNS_JSON" | jq length)
+          echo "RUN_COUNT=$RUN_COUNT" >> $GITHUB_ENV
+          echo "成功获取 $RUN_COUNT 条工作流运行记录"
+          
+          if [ "$RUN_COUNT" -le "$RUNS_TO_KEEP" ]; then
+            echo "现有记录数（$RUN_COUNT）≤ 保留数（$RUNS_TO_KEEP），无需删除"
+            exit 0
+          fi
+          
+          echo "runs_to_delete=true" >> $GITHUB_OUTPUT
+          echo "需要删除旧记录：$((RUN_COUNT - RUNS_TO_KEEP)) 条"
+        else
           echo "未找到工作流运行记录，无需删除"
           exit 0
         fi
-        
-        RUN_COUNT=$(echo "$RUNS_JSON" | jq length)
-        echo "RUN_COUNT=$RUN_COUNT" >> $GITHUB_ENV
-        echo "成功获取 $RUN_COUNT 条工作流运行记录"
-        
-        if [ "$RUN_COUNT" -le "$RUNS_TO_KEEP" ]; then
-          echo "现有记录数（$RUN_COUNT）≤ 保留数（$RUNS_TO_KEEP），无需删除"
-          exit 0
-        fi
-        
-        echo "runs_to_delete=true" >> $GITHUB_OUTPUT
-        echo "需要删除旧记录：$((RUN_COUNT - RUNS_TO_KEEP)) 条"
 
     - name: "Delete old runs"
       shell: bash
       if: steps.fetch_runs.outputs.runs_to_delete == 'true'
       run: |
-        # 重新获取完整的 RUNS_JSON（避免跨步骤变量作用域问题）
-        RUNS_JSON=$(gh run list --status completed --status failure --status success --status cancelled --limit "$FETCH_LIMIT" --paginate --json databaseId,createdAt)
+        # 重新获取所有运行记录（确保数据一致性）
+        ALL_RUNS=()
+        PAGE=1
+        
+        while true; do
+          PAGE_RUNS=$(gh run list --status completed --status failure --status success --status cancelled --limit "$FETCH_LIMIT" --page "$PAGE" --json databaseId,createdAt)
+          
+          if [ -z "$(echo "$PAGE_RUNS" | jq -r '.[0]')" ]; then
+            break
+          fi
+          
+          ALL_RUNS+=("$PAGE_RUNS")
+          PAGE=$((PAGE + 1))
+        done
+        
+        RUNS_JSON=$(echo "${ALL_RUNS[@]}" | jq -s 'add')
         RUN_COUNT=$(echo "$RUNS_JSON" | jq length)
         
         echo -e "\n===== 开始删除旧记录 ====="
@@ -87,7 +117,7 @@ runs:
         echo "$RUNS_TO_DELETE" | head -n 5 | sed 's/^/ - /'
         [ $(echo "$RUNS_TO_DELETE" | wc -w) -gt 5 ] && echo "  ...（剩余 $(($(echo "$RUNS_TO_DELETE" | wc -w) - 5)) 条）"
         
-        # 执行删除操作（使用 -y 参数自动确认）
+        # 执行删除操作
         DELETE_SUCCESS=0
         DELETE_FAILED=0
         
