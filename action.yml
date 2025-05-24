@@ -47,16 +47,34 @@ runs:
         RUNS=$(gh run list --status completed --status failure --status success --status cancelled --limit ${{ env.FETCH_LIMIT }} --json databaseId,createdAt --jq '.[] | {databaseId, createdAt}' | sort -r -k2)
         echo "RUNS=${RUNS}" >> $GITHUB_ENV
 
+        # Check if there are no runs
+        if [ -z "$RUNS" ]; then
+          echo "没有运行记录，无需操作"
+          exit 0
+        fi
+
+        # Count the number of runs
+        RUN_COUNT=$(echo "$RUNS" | jq length)
+        echo "RUN_COUNT=${RUN_COUNT}" >> $GITHUB_ENV
+
+        # Check if the number of runs is within the retention limit
+        if [ "$RUN_COUNT" -le $RUNS_TO_KEEP ]; then
+          echo "运行记录数量在保留范围内，无需操作"
+          exit 0
+        fi
+
     - name: "Filter and delete old artifacts"
       run: |
         # Parse the runs and delete artifacts for runs beyond the specified number to keep
         RUNS_TO_KEEP=${{ env.RUNS_TO_KEEP }}
         RUNS=${{ env.RUNS }}
-        RUNS_ARRAY=($RUNS)
-        RUNS_TO_DELETE=${RUNS_ARRAY[@]:$RUNS_TO_KEEP}
+        RUN_COUNT=${{ env.RUN_COUNT }}
         
-        for RUN in $RUNS_TO_DELETE; do
-          RUN_ID=$(echo $RUN | jq -r '.databaseId')
+        # Extract the runs to delete
+        RUNS_TO_DELETE=$(echo "$RUNS" | jq ".[$RUNS_TO_KEEP:]")
+        
+        # Delete the old runs
+        echo "$RUNS_TO_DELETE" | jq -r '.[] | .databaseId' | while read RUN_ID; do
           echo "Deleting artifacts for run ID: $RUN_ID"
           gh run delete $RUN_ID --confirm
         done
